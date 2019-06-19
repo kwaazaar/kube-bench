@@ -15,11 +15,16 @@
 package check
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+
+	yaml "gopkg.in/yaml.v2"
+	"k8s.io/client-go/util/jsonpath"
 )
 
 // test:
@@ -38,6 +43,7 @@ const (
 
 type testItem struct {
 	Flag    string
+	Path    string
 	Output  string
 	Value   string
 	Set     bool
@@ -52,40 +58,88 @@ type compare struct {
 type testOutput struct {
 	testResult   bool
 	actualResult string
+	ExpectedResult string
+}
+
+func failTestItem(s string) *testOutput {
+	return &testOutput{testResult: false, actualResult: s}
 }
 
 func (t *testItem) execute(s string) *testOutput {
 	result := &testOutput{}
-	match := strings.Contains(s, t.Flag)
+	var match bool
+	var flagVal string
+
+	if t.Flag != "" {
+		// Flag comparison: check if the flag is present in the input
+		match = strings.Contains(s, t.Flag)
+	} else {
+		// Path != "" - we don't know whether it's YAML or JSON but
+		// we can just try one then the other
+		buf := new(bytes.Buffer)
+		var jsonInterface interface{}
+
+		if t.Path != "" {
+			err := json.Unmarshal([]byte(s), &jsonInterface)
+			if err != nil {
+				err := yaml.Unmarshal([]byte(s), &jsonInterface)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "failed to load YAML or JSON from provided input \"%s\": %v\n", s, err)
+					return failTestItem("failed to load YAML or JSON")
+				}
+			}
+		}
+
+		// Parse the jsonpath/yamlpath expression...
+		j := jsonpath.New("jsonpath")
+		j.AllowMissingKeys(true)
+		err := j.Parse(t.Path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "unable to parse path expression \"%s\": %v\n", t.Path, err)
+			return failTestItem("unable to parse path expression")
+		}
+
+		err = j.Execute(buf, jsonInterface)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error executing path expression \"%s\": %v\n", t.Path, err)
+			return failTestItem("error executing path expression")
+		}
+
+		jsonpathResult := fmt.Sprintf("%s", buf)
+		match = (jsonpathResult != "")
+		flagVal = jsonpathResult
+	}
 
 	if t.Set {
-		var flagVal string
 		isset := match
 
 		if isset && t.Compare.Op != "" {
-			// Expects flags in the form;
-			// --flag=somevalue
-			// --flag
-			// somevalue
-			//pttn := `(` + t.Flag + `)(=)*([^\s,]*) *`
-			pttn := `(` + t.Flag + `)(=)*([^\s]*) *`
-			flagRe := regexp.MustCompile(pttn)
-			vals := flagRe.FindStringSubmatch(s)
+			if t.Flag != "" {
+				// Expects flags in the form;
+				// --flag=somevalue
+				// flag: somevalue
+				// --flag
+				// somevalue
+				pttn := `(` + t.Flag + `)(=|: *)*([^\s]*) *`
+				flagRe := regexp.MustCompile(pttn)
+				vals := flagRe.FindStringSubmatch(s)
 
-			if len(vals) > 0 {
-				if vals[3] != "" {
-					flagVal = vals[3]
+				if len(vals) > 0 {
+					if vals[3] != "" {
+						flagVal = vals[3]
+					} else {
+						flagVal = vals[1]
+					}
 				} else {
-					flagVal = vals[1]
+					fmt.Fprintf(os.Stderr, "invalid flag in testitem definition")
+					os.Exit(1)
 				}
-			} else {
-				fmt.Fprintf(os.Stderr, "invalid flag in testitem definition")
-				os.Exit(1)
 			}
 
-			result.actualResult = strings.ToLower(flagVal)
+			expectedResultPattern := ""
 			switch t.Compare.Op {
 			case "eq":
+				expectedResultPattern = "'%s' is equal to '%s'"
 				value := strings.ToLower(flagVal)
 				// Do case insensitive comparaison for booleans ...
 				if value == "false" || value == "true" {
@@ -95,6 +149,7 @@ func (t *testItem) execute(s string) *testOutput {
 				}
 
 			case "noteq":
+				expectedResultPattern = "'%s' is not equal to '%s'"
 				value := strings.ToLower(flagVal)
 				// Do case insensitive comparaison for booleans ...
 				if value == "false" || value == "true" {
@@ -104,32 +159,41 @@ func (t *testItem) execute(s string) *testOutput {
 				}
 
 			case "gt":
+				expectedResultPattern = "%s is greater then %s"
 				a, b := toNumeric(flagVal, t.Compare.Value)
 				result.testResult = a > b
 
 			case "gte":
+				expectedResultPattern = "%s is greater or equal to %s"
 				a, b := toNumeric(flagVal, t.Compare.Value)
 				result.testResult = a >= b
 
 			case "lt":
+				expectedResultPattern = "%s is lower then %s"
 				a, b := toNumeric(flagVal, t.Compare.Value)
 				result.testResult = a < b
 
 			case "lte":
+				expectedResultPattern = "%s is lower or equal to %s"
 				a, b := toNumeric(flagVal, t.Compare.Value)
 				result.testResult = a <= b
 
 			case "has":
+				expectedResultPattern = "'%s' has '%s'"
 				result.testResult = strings.Contains(flagVal, t.Compare.Value)
 
 			case "nothave":
+				expectedResultPattern = " '%s' not have '%s'"
 				result.testResult = !strings.Contains(flagVal, t.Compare.Value)
 			}
+
+			result.ExpectedResult = fmt.Sprintf(expectedResultPattern, t.Flag, t.Compare.Value)
 		} else {
+			result.ExpectedResult = fmt.Sprintf("'%s' is present", t.Flag)
 			result.testResult = isset
 		}
-
 	} else {
+		result.ExpectedResult = fmt.Sprintf("'%s' is not present", t.Flag)
 		notset := !match
 		result.testResult = notset
 	}
@@ -144,13 +208,22 @@ type tests struct {
 func (ts *tests) execute(s string) *testOutput {
 	finalOutput := &testOutput{}
 
+	// If no tests are defined return with empty finalOutput.
+	// This may be the case for checks of type: "skip".
+	if ts == nil {
+		return finalOutput
+	}
+
 	res := make([]testOutput, len(ts.TestItems))
 	if len(res) == 0 {
 		return finalOutput
 	}
 
+	expectedResultArr := make([]string, len(res))
+
 	for i, t := range ts.TestItems {
 		res[i] = *(t.execute(s))
+		expectedResultArr[i] = res[i].ExpectedResult
 	}
 
 	var result bool
@@ -164,15 +237,24 @@ func (ts *tests) execute(s string) *testOutput {
 		for i := range res {
 			result = result && res[i].testResult
 		}
+		// Generate an AND expected result
+		finalOutput.ExpectedResult = strings.Join(expectedResultArr, " AND ")
+
 	case or:
 		result = false
 		for i := range res {
 			result = result || res[i].testResult
 		}
+		// Generate an OR expected result
+		finalOutput.ExpectedResult = strings.Join(expectedResultArr, " OR ")
 	}
 
 	finalOutput.testResult = result
 	finalOutput.actualResult = res[0].actualResult
+
+	if finalOutput.actualResult == "" {
+		finalOutput.actualResult = s
+	}
 
 	return finalOutput
 }

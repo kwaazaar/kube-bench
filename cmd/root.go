@@ -20,9 +20,17 @@ import (
 	"os"
 
 	"github.com/aquasecurity/kube-bench/check"
+	"github.com/golang/glog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
+
+type FilterOpts struct {
+	CheckList string
+	GroupList string
+	Scored    bool
+	Unscored  bool
+}
 
 var (
 	envVarsPrefix      = "KUBE_BENCH"
@@ -32,14 +40,15 @@ var (
 	cfgDir             string
 	jsonFmt            bool
 	pgSQL              bool
-	checkList          string
-	groupList          string
-	masterFile         string
-	nodeFile           string
+	masterFile         = "master.yaml"
+	nodeFile           = "node.yaml"
 	federatedFile      string
 	noResults          bool
 	noSummary          bool
 	noRemediations     bool
+	filterOpts         FilterOpts
+	includeTestOutput  bool
+	outputFile         string
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -47,6 +56,14 @@ var RootCmd = &cobra.Command{
 	Use:   os.Args[0],
 	Short: "Run CIS Benchmarks checks against a Kubernetes deployment",
 	Long:  `This tool runs the CIS Kubernetes Benchmark (https://www.cisecurity.org/benchmark/kubernetes/)`,
+	Run: func(cmd *cobra.Command, args []string) {
+		if isMaster() {
+			glog.V(1).Info("== Running master checks ==\n")
+			runChecks(check.MASTER)
+		}
+		glog.V(1).Info("== Running node checks ==\n")
+		runChecks(check.NODE)
+	},
 }
 
 // Execute adds all child commands to the root command sets flags appropriately.
@@ -70,16 +87,20 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&noRemediations, "noremediations", false, "Disable printing of remediations section")
 	RootCmd.PersistentFlags().BoolVar(&jsonFmt, "json", false, "Prints the results as JSON")
 	RootCmd.PersistentFlags().BoolVar(&pgSQL, "pgsql", false, "Save the results to PostgreSQL")
+	RootCmd.PersistentFlags().BoolVar(&filterOpts.Scored, "scored", true, "Run the scored CIS checks")
+	RootCmd.PersistentFlags().BoolVar(&filterOpts.Unscored, "unscored", true, "Run the unscored CIS checks")
+	RootCmd.PersistentFlags().BoolVar(&includeTestOutput, "include-test-output", false, "Prints the actual result when test fails")
+	RootCmd.PersistentFlags().StringVar(&outputFile, "outputfile", "", "Writes the JSON results to output file")
 
 	RootCmd.PersistentFlags().StringVarP(
-		&checkList,
+		&filterOpts.CheckList,
 		"check",
 		"c",
 		"",
 		`A comma-delimited list of checks to run as specified in CIS document. Example --check="1.1.1,1.1.2"`,
 	)
 	RootCmd.PersistentFlags().StringVarP(
-		&groupList,
+		&filterOpts.GroupList,
 		"group",
 		"g",
 		"",

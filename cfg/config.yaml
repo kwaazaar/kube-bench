@@ -24,39 +24,44 @@ master:
     bins:
       - "kube-apiserver"
       - "hyperkube apiserver"
+      - "hyperkube kube-apiserver"
       - "apiserver"
     confs:
-      - /etc/kubernetes/apiserver.conf
-      - /etc/kubernetes/apiserver
-    defaultconf: /etc/kubernetes/apiserver
+      - /etc/kubernetes/manifests/kube-apiserver.yaml
+      - /etc/kubernetes/manifests/kube-apiserver.manifest
+    defaultconf: /etc/kubernetes/manifests/kube-apiserver.yaml
 
   scheduler:
     bins:
       - "kube-scheduler"
       - "hyperkube scheduler"
+      - "hyperkube kube-scheduler"
       - "scheduler"
-    confs: 
-      - /etc/kubernetes/scheduler.conf
-      - /etc/kubernetes/scheduler
-    defaultconf: /etc/kubernetes/scheduler
+    confs:
+      - /etc/kubernetes/manifests/kube-scheduler.yaml
+      - /etc/kubernetes/manifests/kube-scheduler.manifest
+    defaultconf: /etc/kubernetes/manifests/kube-scheduler.yaml
 
   controllermanager:
     bins:
       - "kube-controller-manager"
       - "hyperkube controller-manager"
+      - "hyperkube kube-controller-manager"
       - "controller-manager"
     confs:
-      - /etc/kubernetes/controller-manager.conf
-      - /etc/kubernetes/controller-manager
-    defaultconf: /etc/kubernetes/controller-manager
+      - /etc/kubernetes/manifests/kube-controller-manager.yaml
+      - /etc/kubernetes/manifests/kube-controller-manager.manifest
+    defaultconf: /etc/kubernetes/manifests/kube-controller-manager.yaml
 
   etcd:
     optional: true
     bins:
       - "etcd"
     confs:
+      - /etc/kubernetes/manifests/etcd.yaml
+      - /etc/kubernetes/manifests/etcd.manifest
       - /etc/etcd/etcd.conf
-    defaultconf: /etc/etcd/etcd.conf
+    defaultconf: /etc/kubernetes/manifests/etcd.yaml
 
   flanneld:
     optional: true
@@ -79,9 +84,12 @@ node:
       - "hyperkube kubelet"
       - "kubelet"
     confs:
-      - /etc/kubernetes/kubelet.conf
-      - /etc/kubernetes/kubelet 
-    defaultconf: "/etc/kubernetes/kubelet.conf"
+      - "/var/lib/kubelet/config.yaml"
+      - "/etc/kubernetes/kubelet/kubelet-config.json"
+      - "/home/kubernetes/kubelet-config.yaml"
+    defaultconf: "/var/lib/kubelet/config.yaml"
+    defaultsvc: "/etc/systemd/system/kubelet.service.d/10-kubeadm.conf"
+    defaultkubeconfig: "/etc/kubernetes/kubelet.conf"
 
   proxy:
     bins:
@@ -89,9 +97,10 @@ node:
       - "hyperkube proxy"
       - "proxy"
     confs:
-      - /etc/kubernetes/proxy.conf
       - /etc/kubernetes/proxy
       - /etc/kubernetes/addons/kube-proxy-daemonset.yaml
+    defaultconf: /etc/kubernetes/addons/kube-proxy-daemonset.yaml
+    defaultkubeconfig: "/etc/kubernetes/proxy.conf"
 
 federated:
   components:
